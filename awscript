@@ -1,0 +1,9 @@
+#!/bin/bash
+
+# XXX prepare the script
+#       bundle lib/*.lua
+#       replace require and print
+# XXX pipe to awesome-client (or dbus-send?)
+# XXX trim the results
+
+cat "$1" | awesome-client
