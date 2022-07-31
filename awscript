@@ -8,6 +8,47 @@ local function print(line)
     __print_lines[#__print_lines + 1] = line
 end
 
+local require
+
+do
+  local __inline_module_loaders = {}
+  local __inline_modules = {}
+
+  --[[ local ]] function require(modname)
+    local module = __inline_modules[modname]
+    if module then
+      return module
+    end
+
+    local loader = __inline_module_loaders[modname]
+    if not loader then
+      error(string.format('module %q not found', modname))
+    end
+
+    module = loader()
+    __inline_modules[modname] = module
+    return module
+  end
+
+END_LUA
+
+    for filename in lib/*.lua ; do
+        module_name="$filename"
+        module_name="${module_name##lib/}"
+        module_name="${module_name%%.lua}"
+        module_name="${module_name//\//.}"
+
+        # XXX something like a #line directive would be nice
+        echo "-- $filename"
+        echo "__inline_module_loaders[ [[$module_name]] ] = function()"
+        cat "$filename"
+        echo 'end'
+        echo ''
+    done
+
+    cat <<END_LUA
+end
+
 local ok, err = xpcall(function()
 END_LUA
 }
@@ -24,9 +65,6 @@ return '\\n' .. table.concat(__print_lines, '\\n') .. '\\n'
 END_LUA
 }
 
-# XXX prepare the script
-#       bundle lib/*.lua
-#       replace require
 # XXX pipe to dbus-send instead?
 
 ( script_preamble ; cat "$1" ; script_postamble ) | awesome-client | tail -n +2 | head -n -1
