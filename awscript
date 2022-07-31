@@ -1,9 +1,27 @@
 #!/bin/bash
 
+script_preamble() {
+    cat <<END_LUA
+local __print_lines = {}
+
+local function print(line)
+    __print_lines[#__print_lines + 1] = line
+end
+
+END_LUA
+}
+
+script_postamble() {
+    cat <<END_LUA
+
+return '\\n' .. table.concat(__print_lines, '\\n') .. '\\n'
+END_LUA
+}
+
 # XXX prepare the script
 #       bundle lib/*.lua
-#       replace require and print
-# XXX pipe to awesome-client (or dbus-send?)
+#       replace require
+# XXX pipe to dbus-send instead?
 # XXX trim the results
 
-cat "$1" | awesome-client
+( script_preamble ; cat "$1" ; script_postamble ) | awesome-client
