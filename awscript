@@ -4,8 +4,14 @@ script_preamble() {
     cat <<END_LUA
 local __print_lines = {}
 
-local function print(line)
-    __print_lines[#__print_lines + 1] = line
+local function print(...)
+  local nargs = select('#', ...)
+  local line_chunks = {}
+  for i = 1, nargs do
+    local arg = select(i, ...)
+    line_chunks[i] = tostring(arg)
+  end
+    __print_lines[#__print_lines + 1] = table.concat(line_chunks, ' ')
 end
 
 local require
