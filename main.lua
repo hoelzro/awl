@@ -1,1 +1,3 @@
-print 'hi'
+local heap = require 'heap'
+
+heap.live_objects()

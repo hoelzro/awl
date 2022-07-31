@@ -8,11 +8,17 @@ local function print(line)
     __print_lines[#__print_lines + 1] = line
 end
 
+local ok, err = pcall(function()
 END_LUA
 }
 
 script_postamble() {
     cat <<END_LUA
+end)
+
+if err then
+  print(string.format("script threw an error: %s", err))
+end
 
 return '\\n' .. table.concat(__print_lines, '\\n') .. '\\n'
 END_LUA
