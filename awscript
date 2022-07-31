@@ -22,6 +22,5 @@ END_LUA
 #       bundle lib/*.lua
 #       replace require
 # XXX pipe to dbus-send instead?
-# XXX trim the results
 
-( script_preamble ; cat "$1" ; script_postamble ) | awesome-client
+( script_preamble ; cat "$1" ; script_postamble ) | awesome-client | tail -n +2 | head -n -1
