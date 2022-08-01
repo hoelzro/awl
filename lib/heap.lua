@@ -89,7 +89,7 @@ local function live_objects()
             pending[#pending + 1] = k
           end
         end
-      else
+      elseif not weak_keys and not weak_values then
         for k, v in pairs(next) do
           -- XXX only do this for unseen values?
           --     only do this for non-number/boolean/etc values?
