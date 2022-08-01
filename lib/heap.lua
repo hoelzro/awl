@@ -180,6 +180,201 @@ local function live_objects()
   return seen
 end
 
+local function path_append(path, elem)
+  return {
+    elem = tostring(elem),
+    tail = path,
+  }
+end
+
+local function path_format(path)
+  local elems = {}
+  while path do
+    elems[#elems + 1] = path.elem
+    path = path.tail
+  end
+  return table.concat(elems, ' ')
+end
+
+local function path_to_object_helper(target, seen, current_path, obj)
+  if obj == nil then
+    return
+  end
+
+  if type(obj) == type(target) and obj == target then
+    return current_path
+  end
+
+  if seen[obj] then
+    return
+  end
+  seen[obj] = true
+
+  local t = type(obj)
+
+  if t == 'table' then
+    local weak_keys
+    local weak_values
+
+    local mt = dgetmetatable(obj)
+
+    if mt then
+      if not seen[mt] then
+        local path = path_to_object_helper(target, seen, path_append(current_path, '(metatable)'), mt)
+        if path then
+          return path
+        end
+      end
+
+      local mode = mt.__mode or ''
+      weak_keys = string.find(mode, 'k')
+      weak_values = string.find(mode, 'v')
+    end
+
+    if weak_keys and not weak_values then
+      for k, v in pairs(obj) do
+        if not seen[v] and not SIMPLE_TYPES[type(v)] then
+          local path = path_to_object_helper(target, seen, path_append(current_path, k), v)
+          if path then
+            return path
+          end
+        end
+      end
+    elseif not weak_keys and weak_values then
+      for k in pairs(obj) do
+        if not seen[k] and not SIMPLE_TYPES[type(k)] then
+          local path = path_to_object_helper(target, seen, path_append(current_path, k), k)
+          if path then
+            return path
+          end
+        end
+      end
+    elseif not weak_keys and not weak_values then
+      for k, v in pairs(obj) do
+        if not seen[k] and not SIMPLE_TYPES[type(k)] then
+          local path = path_to_object_helper(target, seen, path_append(current_path, k), k)
+          if path then
+            return path
+          end
+        end
+
+        if not seen[v] and not SIMPLE_TYPES[type(v)] then
+          local path = path_to_object_helper(target, seen, path_append(current_path, k), v)
+          if path then
+            return path
+          end
+        end
+      end
+    end
+  elseif t == 'function' then
+    local upvalue_index = 1
+    while true do
+      local name, value = debug.getupvalue(obj, upvalue_index)
+      if not name then
+        break
+      end
+
+      if not seen[name] then
+        -- it's a string, so unless we're looking for strings we can omit this, right?
+        local path = path_to_object_helper(target, seen, path_append(current_path, sformat('(upvalue %d: %q)', upvalue_index, name)), name)
+        if path then
+          return path
+        end
+      end
+
+      if not seen[value] and not SIMPLE_TYPES[type(value)] then
+        local path = path_to_object_helper(target, seen, path_append(current_path, sformat('(upvalue %d: %q)', upvalue_index, name)), value)
+        if path then
+          return path
+        end
+      end
+
+      upvalue_index = upvalue_index +  1
+    end
+  elseif t == 'userdata' or AWESOME_TYPES[t] then
+    -- Awesome types are actually userdata!
+    -- XXX the closer I get to extracting "real" edges from userdata, rather than
+    -- just waiting for values to be crawled via the registry, likely the better?
+    local mt = dgetmetatable(obj)
+    if mt and not seen[mt] then
+      local path = path_to_object_helper(target, seen, path_append(current_path, '(metatable)'), mt)
+      if path then
+        return path
+      end
+    end
+
+    local uv = debug.getuservalue(obj)
+    if uv and not seen[uv] and not SIMPLE_TYPES[type(uv)] then
+      local path = path_to_object_helper(target, seen, path_append(current_path, '(uservalue)'), uv)
+      if path then
+        return path
+      end
+    end
+  elseif t == 'thread' then
+    -- XXX if there are C functions on the stack, I have no visibility into what Lua values are there, right?
+    local level = 0
+    while true do
+      local info = debug.getinfo(obj, level, 'f')
+      if not info then
+        break
+      end
+
+      local local_idx = 1
+      while true do
+        local name, value = debug.getlocal(obj, level, local_idx)
+        if not name then
+          break
+        end
+
+        local_idx = local_idx + 1
+
+        if not seen[name] then
+          local path = path_to_object_helper(target, seen, path_append(current_path, name), name)
+          if path then
+            return path
+          end
+        end
+
+        if not seen[value] and not SIMPLE_TYPES[type(value)] then
+          local path = path_to_object_helper(target, seen, path_append(current_path, name), value)
+          if path then
+            return path
+          end
+        end
+      end
+
+      level = level + 1
+
+      if not seen[info.func] then
+        local path = path_to_object_helper(target, seen, path_append(current_path, '(thread function)'), info.func)
+        if path then
+          return path
+        end
+      end
+    end
+  elseif t == 'string' or t == 'number' or t == 'boolean' then
+    -- do nothing (right?)
+  else
+    error(sformat('unhandled type: %s', t))
+  end
+end
+
+-- just returns the first path
+local function path_to_object(target)
+  local seen = {} -- XXX probably should be __mode = 'k', right?
+  seen[seen] = true
+
+  local roots = { _G } -- XXX registry too?
+
+  for i = 1, #roots do
+    local path = path_to_object_helper(target, seen, nil, roots[i])
+    if path then
+      return path
+    end
+  end
+end
+
 return {
-  live_objects = live_objects,
+  live_objects   = live_objects,
+  path_to_object = path_to_object,
 }
