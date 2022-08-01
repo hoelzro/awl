@@ -1,6 +1,8 @@
 #!/bin/bash
 
 script_preamble() {
+    local lua_args=$(lua5.3 -e 'io.stdout:write "{"; for i = 1, #arg do io.stdout:write(string.format("%q, ", arg[i])) end; io.stdout:write "}"' - "$@" </dev/null)
+
     cat <<END_LUA
 local __print_lines = {}
 
@@ -56,6 +58,7 @@ END_LUA
 end
 
 local ok, err = xpcall(function()
+local arg = $lua_args
 END_LUA
 }
 
@@ -71,6 +74,9 @@ return '\\n' .. table.concat(__print_lines, '\\n') .. '\\n'
 END_LUA
 }
 
+script_name="$1"
+shift
+
 # XXX pipe to dbus-send instead?
 
-( script_preamble ; cat "$1" ; script_postamble ) | awesome-client | tail -n +2 | head -n -1
+( script_preamble "$@" ; cat "$script_name" ; script_postamble ) | awesome-client | tail -n +2 | head -n -1
