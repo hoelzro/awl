@@ -1,6 +1,9 @@
 #!/bin/bash
 
-script_preamble() {
+script() {
+    local script_filename="$(lua5.3 -e 'print(string.format("%q", arg[1]))' - "$(pwd)/$1" </dev/null)"
+    shift
+
     local lua_args=$(lua5.3 -e 'io.stdout:write "{"; for i = 1, #arg do io.stdout:write(string.format("%q, ", arg[i])) end; io.stdout:write "}"' - "$@" </dev/null)
 
     cat <<END_LUA
@@ -41,15 +44,14 @@ do
 END_LUA
 
     for filename in lib/*.lua ; do
-        module_name="$filename"
+        local path=$(lua5.3 -e 'print(string.format("%q", arg[1]))' - "$(pwd)/$filename" </dev/null)
+        local module_name="$filename"
         module_name="${module_name##lib/}"
         module_name="${module_name%%.lua}"
         module_name="${module_name//\//.}"
 
-        # XXX something like a #line directive would be nice
-        echo "-- $filename"
         echo "__inline_module_loaders[ [[$module_name]] ] = function()"
-        cat "$filename"
+        echo "  return assert(loadfile($path, 'bt', setmetatable({print = print, require = require}, {__index = _G})))()"
         echo 'end'
         echo ''
     done
@@ -57,19 +59,21 @@ END_LUA
     cat <<END_LUA
 end
 
-local ok, err = xpcall(function()
 local arg = $lua_args
-END_LUA
-}
-
-script_postamble() {
-    cat <<END_LUA
-end, debug.traceback)
-
-if err then
-  print(string.format("script threw an error: %s", err))
+local ok
+local f, err = loadfile($script_filename, 'bt', setmetatable({arg = arg, print = print, require = require}, {__index = _G}))
+if not f then
+  print(string.format("script failed to load: %s", err))
+  goto print
 end
 
+ok, err = xpcall(f, debug.traceback, table.unpack(arg))
+if err then
+  print(string.format("script threw an error: %s", err))
+  goto print
+end
+
+::print::
 return '\\n' .. table.concat(__print_lines, '\\n') .. '\\n'
 END_LUA
 }
@@ -79,4 +83,4 @@ shift
 
 # XXX pipe to dbus-send instead?
 
-( script_preamble "$@" ; cat "$script_name" ; script_postamble ) | awesome-client | tail -n +2 | head -n -1
+( script "$script_name" "$@" ) | awesome-client | tail -n +2 | head -n -1
