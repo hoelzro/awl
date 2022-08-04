@@ -3,6 +3,7 @@
 local assert = assert
 local dgetmetatable = debug.getmetatable
 local rawget = rawget
+local sfind = string.find
 local sformat = string.format
 local type = type
 local unpack = table.unpack
@@ -21,9 +22,10 @@ local AWESOME_TYPES = {
 }
 
 local SIMPLE_TYPES = {
+  ['nil'] = true,
   number = true,
   boolean = true,
-  -- string = true, -- XXX we want to track # of strings though
+  string = true, -- XXX we want to track # of strings though
 }
 
 local function live_objects()
@@ -381,128 +383,132 @@ local function path_to_object(target)
   end
 end
 
-local function function_local_iterator(state, local_idx)
-  local name, value = debug.getlocal(state.co, state.level, local_idx + 1)
-  if not name then
-    return
-  end
+local QUEUE_FUNCTIONS = {}
 
-  return local_idx + 1, name, value
-end
-
-local function function_locals(co, level)
-  -- XXX if co is the running coroutine, this will be fucked up!
-  assert(co ~= coroutine.running())
-
-  return function_local_iterator, {
-    co    = co,
-    level = level,
-  }, 0
-end
-
-local function stack_frame_iterator(co, level)
-  local info = debug.getinfo(co, level + 1, 'f')
-  if not info then
-    return
-  end
-
-  return level + 1, info.func
-end
-
-local function stack_frames(co)
-  -- XXX if co is the running coroutine, this will be fucked up!
-  assert(co ~= coroutine.running())
-
-  return stack_frame_iterator, co, 0
-end
-
-local function function_upvalue_iterator(fn, upvalue_idx)
-  local name, value = debug.getupvalue(fn, upvalue_idx + 1)
-  if not name then
-    return
-  end
-
-  return upvalue_idx + 1, name, value
-end
-
-local function function_upvalues(fn)
-  return function_upvalue_iterator, fn, 0
-end
-
-local TRAVERSAL_FUNCTIONS = {}
-
-function TRAVERSAL_FUNCTIONS.table(t)
-  local mt = dgetmetatable(t)
+-- XXX pass callback instead? (callback should enqueue after checking seen[value] and type(value) against SIMPLE_TYPES)
+-- XXX if you're not including strings, you can avoid emitting them from these functions
+function QUEUE_FUNCTIONS.table(seen, q, obj) -- XXX rename
+  local mt = dgetmetatable(obj)
   local weak_keys
   local weak_values
-  local iterators = {}
-  if mt then
-    iterators[#iterators + 1] = {iter.singleton(mt)}
 
+  if mt then
     local mode = rawget(mt, '__mode') or ''
-    weak_keys = string.find(mode, 'k')
-    weak_values = string.find(mode, 'v')
+    weak_keys = sfind(mode, 'k')
+    weak_values = sfind(mode, 'v')
   end
 
-  if not weak_keys then
-    -- XXX "rawpairs"?
-    iterators[#iterators + 1] = {pairs(t)}
-  end
+  if weak_keys then
+    if not weak_values then
+      -- XXX "rawpairs"
+      for _, outgoing in pairs(obj) do
+        if not seen[outgoing] and not SIMPLE_TYPES[type(outgoing)] then
+          q:push(outgoing)
+        end
+      end
+    end -- if weak keys and weak values, do nothing (maybe changing my mind in the future)
+  else
+    if weak_values then
+      -- XXX "rawpairs"
+      for outgoing in pairs(obj) do
+        if not seen[outgoing] and not SIMPLE_TYPES[type(outgoing)] then
+          q:push(outgoing)
+        end
+      end
+    else
+      -- XXX "rawpairs"
+      for k, v in pairs(obj) do
+        if not seen[k] and not SIMPLE_TYPES[type(k)] then
+          q:push(k)
+        end
 
-  if not weak_values then
-    -- XXX "rawpairs"?
-    iterators[#iterators + 1] = {iter.select(2, pairs(t))}
+        if not seen[v] and not SIMPLE_TYPES[type(v)] then
+          q:push(v)
+        end
+      end
+    end
   end
-
-  return iter.chain(unpack(iterators))
 end
 
-function TRAVERSAL_FUNCTIONS.thread(th)
-  local function th_function_locals(level)
-    return function_locals(th, level)
-  end
+QUEUE_FUNCTIONS['function'] = function(seen, q, fn)
+  -- XXX mark things from debug.getinfo?
+  local upvalue_index = 1
+  while true do
+    local name, value = debug.getupvalue(fn, upvalue_index)
+    if not name then
+      break
+    end
 
-  return iter.chain(
-    {iter.select(4, iter.subiter({stack_frames(th)}, th_function_locals))}, -- local names
-    {iter.select(5, iter.subiter({stack_frames(th)}, th_function_locals))}) -- local values
+    upvalue_index = upvalue_index +  1
+
+    --[[
+    if not seen[name] then
+      q:push(name)
+    end
+    ]]
+
+    if not seen[value] and not SIMPLE_TYPES[type(value)] then
+      q:push(value)
+    end
+  end
 end
 
-function TRAVERSAL_FUNCTIONS.userdata(udata)
-  local iterators = {}
+function QUEUE_FUNCTIONS.thread(seen, q, th)
+  -- XXX if there are C functions on the stack, I have no visibility into what Lua values are there, right?
+  local level = 0
+  while true do
+    local info = debug.getinfo(th, level, 'f')
+    if not info then
+      break
+    end
 
+    local local_idx = 1
+    while true do
+      local name, value = debug.getlocal(th, level, local_idx)
+      if not name then
+        break
+      end
+
+      local_idx = local_idx + 1
+
+      --[[
+      if not seen[name] then
+        pending[#pending + 1] = name
+      end
+      ]]
+
+      if not seen[value] and not SIMPLE_TYPES[type(value)] then
+        q:push(value)
+      end
+    end
+
+    level = level + 1
+
+    if not seen[info.func] then
+      q:push(info.func)
+    end
+  end
+end
+
+function QUEUE_FUNCTIONS.userdata(seen, q, udata)
   local mt = dgetmetatable(udata)
-  if mt then
-    iterators[#iterators + 1] = {iter.singleton(mt)}
+  if mt and not seen[mt] then
+    q:push(mt)
   end
 
   local uv = debug.getuservalue(udata)
-  if uv then
-    iterators[#iterators + 1] = {iter.singleton(uv)}
+  if uv and not seen[uv] then
+    q:push(uv)
   end
-
-  return iter.chain(unpack(iterators))
-end
-
-TRAVERSAL_FUNCTIONS['function'] = function(fn)
-  return iter.chain(
-    {iter.select(2, function_upvalues(fn))},
-    {iter.select(3, function_upvalues(fn))})
 end
 
 for t in pairs(AWESOME_TYPES) do
-  TRAVERSAL_FUNCTIONS[t] = TRAVERSAL_FUNCTIONS.userdata
-end
-
--- XXX I think this is busted
-local empty_iterator = iter.singleton(nil)
-
-for t in pairs(SIMPLE_TYPES) do
-  TRAVERSAL_FUNCTIONS[t] = empty_iterator
+  QUEUE_FUNCTIONS[t] = QUEUE_FUNCTIONS.userdata
 end
 
 local function new_live_objects(options)
   options = options or {}
-  -- XXX optimization (instead of doing the whole iterator thing, just provide the queue to the traversal function to push to?)
+  -- XXX optimization
   -- XXX "should I traverse weak keys/values" option
   -- XXX include strings or something
   -- XXX "step size"?
@@ -530,13 +536,10 @@ local function new_live_objects(options)
     seen[obj] = true
 
     local t = type(obj)
-    local traverse = assert(TRAVERSAL_FUNCTIONS[t], sformat('unhandled type: %s', t))
+    if not SIMPLE_TYPES[t] then
+      local queue_f = assert(QUEUE_FUNCTIONS[t], sformat('unhandled type: %s', t))
 
-    for outgoing in traverse(obj) do
-      -- XXX if we're not going to include strings, we can omit them from the TRAVERSAL_FUNCTIONS above
-      if not seen[outgoing] and not SIMPLE_TYPES[type(outgoing)] then
-        q:push(outgoing)
-      end
+      queue_f(seen, q, obj)
     end
 
     ::continue::
