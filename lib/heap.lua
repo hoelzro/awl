@@ -1,7 +1,10 @@
 -- live object heap traversal functions
 
+local assert = assert
 local dgetmetatable = debug.getmetatable
+local rawget = rawget
 local sformat = string.format
+local type = type
 local unpack = table.unpack
 
 local iter = require 'iter'
