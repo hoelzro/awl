@@ -2,6 +2,10 @@
 
 local dgetmetatable = debug.getmetatable
 local sformat = string.format
+local unpack = table.unpack
+
+local iter = require 'iter'
+local queue = require 'queue'
 
 local AWESOME_TYPES = {
   key    = true,
@@ -372,6 +376,171 @@ local function path_to_object(target)
       return path
     end
   end
+end
+
+local function function_local_iterator(state, local_idx)
+  local name, value = debug.getlocal(state.co, state.level, local_idx + 1)
+  if not name then
+    return
+  end
+
+  return local_idx + 1, name, value
+end
+
+local function function_locals(co, level)
+  -- XXX if co is the running coroutine, this will be fucked up!
+  assert(co ~= coroutine.running())
+
+  return function_local_iterator, {
+    co    = co,
+    level = level,
+  }, 0
+end
+
+local function stack_frame_iterator(co, level)
+  local info = debug.getinfo(co, level + 1, 'f')
+  if not info then
+    return
+  end
+
+  return level + 1, info.func
+end
+
+local function stack_frames(co)
+  -- XXX if co is the running coroutine, this will be fucked up!
+  assert(co ~= coroutine.running())
+
+  return stack_frame_iterator, co, 0
+end
+
+local function function_upvalue_iterator(fn, upvalue_idx)
+  local name, value = debug.getupvalue(fn, upvalue_idx + 1)
+  if not name then
+    return
+  end
+
+  return upvalue_idx + 1, name, value
+end
+
+local function function_upvalues(fn)
+  return function_upvalue_iterator, fn, 0
+end
+
+local TRAVERSAL_FUNCTIONS = {}
+
+function TRAVERSAL_FUNCTIONS.table(t)
+  local mt = dgetmetatable(t)
+  local weak_keys
+  local weak_values
+  local iterators = {}
+  if mt then
+    iterators[#iterators + 1] = {iter.singleton(mt)}
+
+    local mode = rawget(mt, '__mode') or ''
+    weak_keys = string.find(mode, 'k')
+    weak_values = string.find(mode, 'v')
+  end
+
+  if not weak_keys then
+    -- XXX "rawpairs"?
+    iterators[#iterators + 1] = {pairs(t)}
+  end
+
+  if not weak_values then
+    -- XXX "rawpairs"?
+    iterators[#iterators + 1] = {iter.select(2, pairs(t))}
+  end
+
+  return iter.chain(unpack(iterators))
+end
+
+function TRAVERSAL_FUNCTIONS.thread(th)
+  local function th_function_locals(level)
+    return function_locals(th, level)
+  end
+
+  return iter.chain(
+    {iter.select(4, iter.subiter({stack_frames(th)}, th_function_locals))}, -- local names
+    {iter.select(5, iter.subiter({stack_frames(th)}, th_function_locals))}) -- local values
+end
+
+function TRAVERSAL_FUNCTIONS.userdata(udata)
+  local iterators = {}
+
+  local mt = dgetmetatable(udata)
+  if mt then
+    iterators[#iterators + 1] = {iter.singleton(mt)}
+  end
+
+  local uv = debug.getuservalue(udata)
+  if uv then
+    iterators[#iterators + 1] = {iter.singleton(uv)}
+  end
+
+  return iter.chain(unpack(iterators))
+end
+
+TRAVERSAL_FUNCTIONS['function'] = function(fn)
+  return iter.chain(
+    {iter.select(2, function_upvalues(fn))},
+    {iter.select(3, function_upvalues(fn))})
+end
+
+for t in pairs(AWESOME_TYPES) do
+  TRAVERSAL_FUNCTIONS[t] = TRAVERSAL_FUNCTIONS.userdata
+end
+
+-- XXX I think this is busted
+local empty_iterator = iter.singleton(nil)
+
+for t in pairs(SIMPLE_TYPES) do
+  TRAVERSAL_FUNCTIONS[t] = empty_iterator
+end
+
+local function new_live_objects(options)
+  options = options or {}
+  -- XXX optimization (instead of doing the whole iterator thing, just provide the queue to the traversal function to push to?)
+  -- XXX "should I traverse weak keys/values" option
+  -- XXX include strings or something
+  -- XXX "step size"?
+  -- XXX custom root set? "is reachable"
+
+  local roots = { _G }
+  if options.registry then
+    roots[#roots + 1] = debug.getregistry()
+  end
+
+  local q = queue:new(roots)
+  local seen = setmetatable({}, {__mode = 'k'})
+  seen[seen] = true -- XXX is this necessary?
+
+  while true do
+    local obj = q:pop()
+    if not obj then
+      break
+    end
+
+    -- XXX is the obj == q thing necessary?
+    if obj == q or seen[obj] then
+      goto continue
+    end
+    seen[obj] = true
+
+    local t = type(obj)
+    local traverse = assert(TRAVERSAL_FUNCTIONS[t], sformat('unhandled type: %s', t))
+
+    for outgoing in traverse(obj) do
+      -- XXX if we're not going to include strings, we can omit them from the TRAVERSAL_FUNCTIONS above
+      if not seen[outgoing] and not SIMPLE_TYPES[type(outgoing)] then
+        q:push(outgoing)
+      end
+    end
+
+    ::continue::
+  end
+
+  seen[seen] = nil
+  return seen
 end
 
 return {
