@@ -70,7 +70,7 @@ local function live_objects()
           pending[#pending + 1] = mt
         end
 
-        local mode = mt.__mode or ''
+        local mode = rawget(mt, '__mode') or ''
         weak_keys = string.find(mode, 'k')
         weak_values = string.find(mode, 'v')
       end
@@ -226,7 +226,7 @@ local function path_to_object_helper(target, seen, current_path, obj)
         end
       end
 
-      local mode = mt.__mode or ''
+      local mode = rawget(mt, '__mode') or ''
       weak_keys = string.find(mode, 'k')
       weak_values = string.find(mode, 'v')
     end
