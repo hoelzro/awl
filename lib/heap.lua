@@ -385,10 +385,9 @@ end
 
 local QUEUE_FUNCTIONS = {}
 
--- XXX pass callback instead? (callback should enqueue after checking seen[value] and type(value) against SIMPLE_TYPES)
 -- XXX if you're not including strings, you can avoid emitting them from these functions
-function QUEUE_FUNCTIONS.table(seen, q, obj) -- XXX rename
-  local mt = dgetmetatable(obj)
+function QUEUE_FUNCTIONS.table(yield, t)
+  local mt = dgetmetatable(t)
   local weak_keys
   local weak_values
 
@@ -401,36 +400,27 @@ function QUEUE_FUNCTIONS.table(seen, q, obj) -- XXX rename
   if weak_keys then
     if not weak_values then
       -- XXX "rawpairs"
-      for _, outgoing in pairs(obj) do
-        if not seen[outgoing] and not SIMPLE_TYPES[type(outgoing)] then
-          q:push(outgoing)
-        end
+      for _, outgoing in pairs(t) do
+        yield(outgoing)
       end
     end -- if weak keys and weak values, do nothing (maybe changing my mind in the future)
   else
     if weak_values then
       -- XXX "rawpairs"
-      for outgoing in pairs(obj) do
-        if not seen[outgoing] and not SIMPLE_TYPES[type(outgoing)] then
-          q:push(outgoing)
-        end
+      for outgoing in pairs(t) do
+        yield(outgoing)
       end
     else
       -- XXX "rawpairs"
-      for k, v in pairs(obj) do
-        if not seen[k] and not SIMPLE_TYPES[type(k)] then
-          q:push(k)
-        end
-
-        if not seen[v] and not SIMPLE_TYPES[type(v)] then
-          q:push(v)
-        end
+      for k, v in pairs(t) do
+        yield(k)
+        yield(v)
       end
     end
   end
 end
 
-QUEUE_FUNCTIONS['function'] = function(seen, q, fn)
+QUEUE_FUNCTIONS['function'] = function(yield, fn)
   -- XXX mark things from debug.getinfo?
   local upvalue_index = 1
   while true do
@@ -441,19 +431,13 @@ QUEUE_FUNCTIONS['function'] = function(seen, q, fn)
 
     upvalue_index = upvalue_index +  1
 
-    --[[
-    if not seen[name] then
-      q:push(name)
-    end
-    ]]
+    -- yield(name)
 
-    if not seen[value] and not SIMPLE_TYPES[type(value)] then
-      q:push(value)
-    end
+    yield(value)
   end
 end
 
-function QUEUE_FUNCTIONS.thread(seen, q, th)
+function QUEUE_FUNCTIONS.thread(yield, th)
   -- XXX if there are C functions on the stack, I have no visibility into what Lua values are there, right?
   local level = 0
   while true do
@@ -472,33 +456,27 @@ function QUEUE_FUNCTIONS.thread(seen, q, th)
       local_idx = local_idx + 1
 
       --[[
-      if not seen[name] then
-        pending[#pending + 1] = name
-      end
+      yield(name)
       ]]
 
-      if not seen[value] and not SIMPLE_TYPES[type(value)] then
-        q:push(value)
-      end
+      yield(value)
     end
 
     level = level + 1
 
-    if not seen[info.func] then
-      q:push(info.func)
-    end
+    yield(info.func)
   end
 end
 
-function QUEUE_FUNCTIONS.userdata(seen, q, udata)
+function QUEUE_FUNCTIONS.userdata(yield, udata)
   local mt = dgetmetatable(udata)
-  if mt and not seen[mt] then
-    q:push(mt)
+  if mt then
+    yield(mt)
   end
 
   local uv = debug.getuservalue(udata)
-  if uv and not seen[uv] then
-    q:push(uv)
+  if uv then
+    yield(uv)
   end
 end
 
@@ -523,6 +501,12 @@ local function new_live_objects(options)
   local seen = setmetatable({}, {__mode = 'k'})
   seen[seen] = true -- XXX is this necessary?
 
+  local function yield(obj)
+    if not seen[obj] and not SIMPLE_TYPES[type(obj)] then
+      q:push(obj)
+    end
+  end
+
   while true do
     local obj = q:pop()
     if not obj then
@@ -539,7 +523,7 @@ local function new_live_objects(options)
     if not SIMPLE_TYPES[t] then
       local queue_f = assert(QUEUE_FUNCTIONS[t], sformat('unhandled type: %s', t))
 
-      queue_f(seen, q, obj)
+      queue_f(yield, obj)
     end
 
     ::continue::
