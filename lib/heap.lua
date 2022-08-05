@@ -392,6 +392,8 @@ function QUEUE_FUNCTIONS.table(yield, t)
   local weak_values
 
   if mt then
+    yield(mt)
+
     local mode = rawget(mt, '__mode') or ''
     weak_keys = sfind(mode, 'k')
     weak_values = sfind(mode, 'v')
