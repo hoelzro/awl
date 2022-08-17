@@ -2,6 +2,7 @@
 
 local assert = assert
 local dgetmetatable = debug.getmetatable
+local rawequal = rawequal
 local rawget = rawget
 local sfind = string.find
 local sformat = string.format
@@ -392,7 +393,7 @@ function QUEUE_FUNCTIONS.table(yield, t)
   local weak_values
 
   if mt then
-    yield(mt)
+    yield(mt, '(metatable)')
 
     local mode = rawget(mt, '__mode') or ''
     weak_keys = sfind(mode, 'k')
@@ -402,21 +403,21 @@ function QUEUE_FUNCTIONS.table(yield, t)
   if weak_keys then
     if not weak_values then
       -- XXX "rawpairs"
-      for _, outgoing in pairs(t) do
-        yield(outgoing)
+      for k, outgoing in pairs(t) do
+        yield(outgoing, k)
       end
     end -- if weak keys and weak values, do nothing (maybe changing my mind in the future)
   else
     if weak_values then
       -- XXX "rawpairs"
       for outgoing in pairs(t) do
-        yield(outgoing)
+        yield(outgoing, outgoing)
       end
     else
       -- XXX "rawpairs"
       for k, v in pairs(t) do
-        yield(k)
-        yield(v)
+        yield(k, k)
+        yield(v, k)
       end
     end
   end
@@ -433,9 +434,9 @@ QUEUE_FUNCTIONS['function'] = function(yield, fn)
 
     upvalue_index = upvalue_index +  1
 
-    -- yield(name)
+    -- yield(name, '(upvalue: ' .. name .. ')')
 
-    yield(value)
+    yield(value, '(upvalue: ' .. name .. ')')
   end
 end
 
@@ -458,27 +459,27 @@ function QUEUE_FUNCTIONS.thread(yield, th)
       local_idx = local_idx + 1
 
       --[[
-      yield(name)
+      yield(name, '(local: ' .. name .. ')')
       ]]
 
-      yield(value)
+      yield(value, '(local: ' .. name .. ')')
     end
 
     level = level + 1
 
-    yield(info.func)
+    yield(info.func, '(function on stack)')
   end
 end
 
 function QUEUE_FUNCTIONS.userdata(yield, udata)
   local mt = dgetmetatable(udata)
   if mt then
-    yield(mt)
+    yield(mt, '(metatable)')
   end
 
   local uv = debug.getuservalue(udata)
   if uv then
-    yield(uv)
+    yield(uv, '(uservalue)')
   end
 end
 
@@ -486,7 +487,7 @@ for t in pairs(AWESOME_TYPES) do
   QUEUE_FUNCTIONS[t] = QUEUE_FUNCTIONS.userdata
 end
 
-local function new_live_objects(options)
+local function new_live_objects_bfs(options)
   options = options or {}
   -- XXX optimization
   -- XXX "should I traverse weak keys/values" option
@@ -535,7 +536,70 @@ local function new_live_objects(options)
   return seen
 end
 
+local function new_path_to_object(target, options)
+  options = options or {}
+
+  local roots = { {_G, nil} }
+  if options.registry then
+    roots[#roots + 1] = { debug.getregistry(), nil }
+  end
+
+  local q = queue:new(roots)
+  local seen = setmetatable({}, {__mode = 'k'})
+  seen[seen] = true -- XXX is this necessary?
+
+  local BAD_PATH_SENTINEL = {}
+  local current_path -- XXX I hate this
+  current_path = BAD_PATH_SENTINEL
+
+  local function yield(obj, path_elem)
+    if not seen[obj] and not SIMPLE_TYPES[type(obj)] then
+      assert(path_elem)
+      assert(current_path ~= BAD_PATH_SENTINEL)
+      q:push { obj, path_append(current_path, path_elem) }
+    end
+  end
+
+  local target_type = type(target)
+
+  while true do
+    local obj = q:pop()
+    if not obj then
+      break
+    end
+
+    obj, current_path = unpack(obj)
+
+    if rawequal(obj, target) then
+      return current_path
+    end
+
+    local t
+
+    -- XXX is the obj == q thing necessary?
+    if obj == q or seen[obj] then
+      goto continue
+    end
+    seen[obj] = true
+
+    -- XXX t can be made local here if I remove the BAD_PATH_SENTINEL stuff
+    t = type(obj)
+    if not SIMPLE_TYPES[t] then
+      local queue_f = assert(QUEUE_FUNCTIONS[t], sformat('unhandled type: %s', t))
+
+      queue_f(yield, obj)
+    end
+
+    ::continue::
+    current_path = BAD_PATH_SENTINEL -- XXX DEBUG
+  end
+end
+
 return {
   live_objects   = live_objects,
   path_to_object = path_to_object,
+  path_format = path_format,
+
+  new_live_objects = new_live_objects_bfs,
+  new_path_to_object = new_path_to_object,
 }
