@@ -191,8 +191,17 @@ local function live_objects()
 end
 
 local function path_append(path, elem)
+  local t = type(elem)
+  if t ~= 'string' then
+    if AWESOME_TYPES[t] and elem.valid == false then
+      elem = '(invalid ' .. t .. ')'
+    else
+      elem = tostring(elem)
+    end
+  end
+
   return {
-    elem = tostring(elem),
+    elem = elem,
     tail = path,
   }
 end
